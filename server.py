@@ -25,7 +25,6 @@ and int8 quantization made the speech unintelligible.
 import asyncio
 import io
 import logging
-import math
 import os
 import threading
 import time
@@ -37,6 +36,7 @@ import torch
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from batching import frame_cap, select
 from text import sentences
 
 MODEL = os.environ.get("MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
@@ -44,17 +44,15 @@ REVISION = os.environ.get("MODEL_REVISION") or None
 THREADS = int(os.environ.get("THREADS", "0") or 0)
 LANGUAGE = os.environ.get("LANGUAGE", "Auto")
 MAX_BATCH = int(os.environ.get("MAX_BATCH", "16"))
+# Rows times the longest sentence's frame cap a batch may hold: its memory
+# grows with both (every row runs as long as the longest; see README).
+MAX_ROW_FRAMES = int(os.environ.get("MAX_ROW_FRAMES", "6000"))
 # How long the batch waits for sentences of further requests.
 BATCH_WAIT = float(os.environ.get("BATCH_WAIT_MS", "100")) / 1000
 SENTENCE_PAUSE = float(os.environ.get("SENTENCE_PAUSE", "0.2"))
 # Sentences shorter than this are joined with the next one (a lone
 # "Yes." speaks oddly, and every row of a batch costs the same per frame).
 MIN_CHARS = int(os.environ.get("MIN_CHARS", "40"))
-# The 12Hz codec makes 12.5 frames per second of speech. Slow speech is
-# about 10 characters per second; a sentence may take three times that
-# before it is cut, so a run that does not end cannot grow without bound.
-FRAMES_PER_CHAR = 12.5 / 10 * 3
-MIN_FRAMES = 75
 SAMPLE_RATE = 24000  # of the 12Hz codec's decoder
 
 # Gender of Qwen3-TTS CustomVoice's speakers (model card).
@@ -100,6 +98,27 @@ def decode_each(decode):
     return wrapped
 
 
+def last_layer_only(forward):
+    """The talker's decoder returns every layer's hidden states (asked for
+    by qwen-tts's generate), and generate keeps them for every frame of
+    every row, though qwen-tts reads only the last layer's. Keeping just
+    that one bounds what a long batch holds."""
+    def wrapped(*args, **kwargs):
+        out = forward(*args, **kwargs)
+        if getattr(out, "hidden_states", None):
+            out.hidden_states = (out.hidden_states[-1],)
+        return out
+    return wrapped
+
+
+def anon_mib() -> int:
+    with open("/proc/self/status") as f:
+        for line in f:
+            if line.startswith("RssAnon:"):
+                return int(line.split()[1]) // 1024
+    return 0
+
+
 def load():
     global model
     try:
@@ -114,6 +133,7 @@ def load():
         log.info("loading %s at %s", MODEL, REVISION or "main")
         m = Qwen3TTSModel.from_pretrained(path, device_map="cpu", dtype=torch.float32, attn_implementation="sdpa")
         m.model.speech_tokenizer.decode = decode_each(m.model.speech_tokenizer.decode)
+        m.model.talker.model.forward = last_layer_only(m.model.talker.model.forward)
         for s in m.get_supported_speakers() or []:
             voice_names.append("_".join(w.capitalize() for w in s.split("_")))
             speakers[s.lower()] = s
@@ -136,10 +156,17 @@ def worker():
         # Let the sentences of requests arriving together join the batch.
         time.sleep(BATCH_WAIT)
         with queued:
-            batch, queue[:] = queue[:MAX_BATCH], queue[MAX_BATCH:]
+            batch, queue[:] = select(queue, MAX_BATCH, MAX_ROW_FRAMES)
         started = time.perf_counter()
+        frames = max(frame_cap(p.text) for p in batch)
+        before, peak = anon_mib(), [0]
+        sampling = threading.Event()
+
+        def sample():
+            while not sampling.wait(0.5):
+                peak[0] = max(peak[0], anon_mib())
+        threading.Thread(target=sample, daemon=True).start()
         try:
-            frames = max(MIN_FRAMES, math.ceil(max(len(p.text) for p in batch) * FRAMES_PER_CHAR))
             with torch.inference_mode():
                 wavs, _ = model.generate_custom_voice(
                     text=[p.text for p in batch], speaker=[p.speaker for p in batch],
@@ -151,8 +178,11 @@ def worker():
             log.exception("generation failed")
             for p in batch:
                 p.error = e
+        sampling.set()
         seconds = sum(p.audio.size for p in batch if p.audio is not None) / SAMPLE_RATE
-        log.info("batch of %d: %.1f s of speech in %.1f s", len(batch), seconds, time.perf_counter() - started)
+        log.info("batch of %d: %.1f s of speech in %.1f s (frame cap %d, memory %d MiB, peak +%d MiB)",
+                 len(batch), seconds, time.perf_counter() - started, frames, before,
+                 max(peak[0], anon_mib()) - before)
         for p in batch:
             p.done.set()
 

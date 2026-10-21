@@ -51,11 +51,16 @@ Weights stay float32. bfloat16 is slow on CPUs without native support, and
 dynamic int8 quantization made the speech unintelligible (Whisper word error
 rate 58–82 % against 0 % for float32).
 
-Memory (1.7B): about 8 GiB after loading, plus the batch (table above);
+Memory (1.7B): about 8 GiB after loading, plus the batch (table above;
+real book sentences are longer than the benchmark's, and a batch's memory
+grows with its rows times its longest sentence, which `MAX_ROW_FRAMES`
+bounds; every batch logs its peak);
 loading peaks briefly at about 11.7 GiB (partly the mapped weights file).
 qwen-tts decodes a whole batch to audio at once, every row padded to the
 longest, which took 3 GiB more with 8 rows; the server decodes one row at a
-time instead.
+time instead. And qwen-tts's generate keeps the hidden states of all 29
+layers for every frame of every row, though it reads only the last layer's;
+the server keeps only that one.
 
 ## Configuration
 
@@ -67,7 +72,8 @@ time instead.
 | `HF_TOKEN` | | Only needed for rate limits |
 | `THREADS` | torch's default | CPU threads; leave one core for the rest of the node |
 | `LANGUAGE` | `Auto` | Language of requests that name none (`Auto`, `English`, `German`, …) |
-| `MAX_BATCH` | `16` | Sentences generated together |
+| `MAX_BATCH` | `16` | Sentences generated together, at most |
+| `MAX_ROW_FRAMES` | `6000` | Rows times the longest sentence's frame cap (3.75 frames per character, at least 75) a batch may hold; a longer sentence waits for a batch of its own length |
 | `BATCH_WAIT_MS` | `100` | How long a batch waits for sentences of further requests |
 | `MIN_CHARS` | `40` | Shorter sentences are joined with the next |
 | `SENTENCE_PAUSE` | `0.2` | Seconds of silence between sentences |

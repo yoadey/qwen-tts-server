@@ -14,7 +14,7 @@ RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
 
 RUN useradd --uid 1000 --create-home app && mkdir -p /models && chown app /models
 WORKDIR /app
-COPY server.py text.py ./
+COPY server.py text.py batching.py ./
 USER 1000
 EXPOSE 8000
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

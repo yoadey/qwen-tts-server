@@ -41,4 +41,4 @@ jobs:
       - name: Smoke test
         run: |
           docker run --rm --entrypoint python3 qwen-tts-server:ci -c \
-            "import fastapi, uvicorn, soundfile, torch, qwen_tts; import ast; ast.parse(open('server.py').read()); import text"
+            "import fastapi, uvicorn, soundfile, torch, qwen_tts; import ast; ast.parse(open('server.py').read()); import text, batching"
