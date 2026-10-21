@@ -1,0 +1,8 @@
+# CPU builds of torch; qwen-tts pins its transformers and accelerate.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0+cpu
+torchaudio==2.11.0+cpu
+qwen-tts==0.1.1
+fastapi==0.142.2
+uvicorn==0.53.0
+soundfile==0.14.0

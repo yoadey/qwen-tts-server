@@ -1,0 +1,16 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":timezone(Europe/Berlin)",
+  ],
+  packageRules: [
+    {
+      description: "torch and torchaudio are released together",
+      matchPackageNames: ["torch", "torchaudio"],
+      groupName: "torch",
+    },
+  ],
+}
