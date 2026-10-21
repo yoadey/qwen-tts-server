@@ -4,19 +4,21 @@ An OpenAI-compatible speech server for
 [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) CustomVoice on CPU, made for
 reading books aloud (e.g. as an engine of
 [audiobook-generator](https://github.com/yoadey/audiobook-generator)).
-Emotions are given in words per request ("Say angrily.").
+Emotions are given in words per request ("Say it angrily."). The request
+shape is that of vLLM-Omni's Qwen3-TTS endpoint, so audiobook-generator's
+engine of kind `qwen3` talks to it directly.
 
 ## API
 
 | Endpoint | |
 |---|---|
-| `POST /v1/audio/speech` | `{"input", "voice", "instructions", "response_format"}` → WAV (16-bit mono, 24 kHz, default) or MP3. `instructions` is Qwen's instruct (1.7B only; the 0.6B model ignores it). `speed` is accepted and ignored. |
-| `GET /v1/audio/voices` | The model's speakers with a gender tag: `f_serena`, `m_ryan`, … (the bare name `serena` is accepted too) |
+| `POST /v1/audio/speech` | `{"input", "voice", "instructions", "language", "response_format"}` → WAV (16-bit mono, 24 kHz, default) or MP3. `instructions` is Qwen's instruct (1.7B only; the 0.6B model ignores it). `language` is one of the model's (`English`, `German`, `Auto`, …; default `LANGUAGE`). `model` and `speed` are accepted and ignored. |
+| `GET /v1/audio/voices` | The model's speakers as Qwen names them: `Aiden`, `Ryan`, `Serena`, `Ono_Anna`, … (any case is accepted, and a gender tag like `m_ryan` too) |
 | `GET /health` | 200 once the model is loaded, 503 before |
 
 ```sh
 curl -s localhost:8000/v1/audio/speech -H 'Content-Type: application/json' \
-  -d '{"input": "Then light the lamp! Light it now!", "voice": "f_serena", "instructions": "Shout."}' \
+  -d '{"input": "Then light the lamp! Light it now!", "voice": "Serena", "language": "English", "instructions": "Say it shouting."}' \
   -o out.wav
 ```
 
@@ -64,7 +66,7 @@ time instead.
 | `HF_HOME` | `/models` | Where the model is downloaded on first start (~4.5 GB); mount a volume |
 | `HF_TOKEN` | | Only needed for rate limits |
 | `THREADS` | torch's default | CPU threads; leave one core for the rest of the node |
-| `LANGUAGE` | `Auto` | Qwen's language (`Auto`, `English`, `German`, …) |
+| `LANGUAGE` | `Auto` | Language of requests that name none (`Auto`, `English`, `German`, …) |
 | `MAX_BATCH` | `16` | Sentences generated together |
 | `BATCH_WAIT_MS` | `100` | How long a batch waits for sentences of further requests |
 | `MIN_CHARS` | `40` | Shorter sentences are joined with the next |
@@ -78,7 +80,7 @@ broken download is resumed).
 `ghcr.io/yoadey/qwen-tts-server:<version>`, released from tags `v*.*.*`.
 
 ```sh
-docker run -p 8000:8000 -v qwen-models:/models -e THREADS=3 ghcr.io/yoadey/qwen-tts-server:0.1.0
+docker run -p 8000:8000 -v qwen-models:/models -e THREADS=3 ghcr.io/yoadey/qwen-tts-server:0.2.0
 ```
 
 ## Licence

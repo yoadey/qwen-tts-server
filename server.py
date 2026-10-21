@@ -1,11 +1,14 @@
 """qwen-tts-server: an OpenAI-compatible speech endpoint for Qwen3-TTS
 CustomVoice on CPU.
 
-POST /v1/audio/speech {"input", "voice", "response_format", "instructions"}
-answers WAV (16-bit mono, 24 kHz) or MP3; "instructions" ("Say it angrily")
-is Qwen's instruct (1.7B only; 0.6B ignores it), "speed" is not supported.
-GET /v1/audio/voices lists the model's speakers with a gender tag
-("m_ryan", "f_serena"; the bare speaker name is accepted too).
+POST /v1/audio/speech {"input", "voice", "response_format", "instructions",
+"language"} answers WAV (16-bit mono, 24 kHz) or MP3; "instructions" ("Say
+it angrily.") is Qwen's instruct (1.7B only; 0.6B ignores it), "language"
+one of the model's ("English", "German", "Auto"; default LANGUAGE),
+"speed" is not supported. The request shape is that of vLLM-Omni's Qwen3-TTS
+endpoint, as audiobook-generator's engine of kind "qwen3" sends it.
+GET /v1/audio/voices lists the model's speakers as Qwen names them ("Ryan",
+"Ono_Anna"); any case is accepted, and a gender tag ("m_ryan") too.
 GET /health answers 200 once the model is loaded (503 before). A model
 that fails to load ends the process, so the kubelet starts it again (a
 broken download is resumed).
@@ -62,7 +65,9 @@ log = logging.getLogger("qwen-tts")
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="qwen-tts")
 model = None
-speakers: dict[str, str] = {}  # listed name -> speaker
+voice_names: list[str] = []  # as listed: "Ryan", "Ono_Anna"
+speakers: dict[str, str] = {}  # accepted name (lower case) -> speaker
+languages: set[str] = set()  # the model's (lower case); empty: any
 
 
 @dataclass
@@ -70,6 +75,7 @@ class Piece:
     text: str
     speaker: str
     instruct: str
+    language: str
     audio: np.ndarray | None = None
     error: Exception | None = None
     done: threading.Event = field(default_factory=threading.Event)
@@ -109,9 +115,13 @@ def load():
         m = Qwen3TTSModel.from_pretrained(path, device_map="cpu", dtype=torch.float32, attn_implementation="sdpa")
         m.model.speech_tokenizer.decode = decode_each(m.model.speech_tokenizer.decode)
         for s in m.get_supported_speakers() or []:
-            speakers[f"{GENDERS[s]}_{s}" if s in GENDERS else s] = s
+            voice_names.append("_".join(w.capitalize() for w in s.split("_")))
+            speakers[s.lower()] = s
+            if s in GENDERS:
+                speakers[f"{GENDERS[s]}_{s}"] = s
+        languages.update(x.lower() for x in m.get_supported_languages() or [])
         model = m
-        log.info("model loaded, speakers %s", sorted(speakers))
+        log.info("model loaded, speakers %s, languages %s", voice_names, sorted(languages))
     except Exception:
         log.exception("loading the model failed")
         os._exit(1)
@@ -133,7 +143,8 @@ def worker():
             with torch.inference_mode():
                 wavs, _ = model.generate_custom_voice(
                     text=[p.text for p in batch], speaker=[p.speaker for p in batch],
-                    instruct=[p.instruct for p in batch], language=LANGUAGE, max_new_tokens=frames)
+                    instruct=[p.instruct for p in batch], language=[p.language for p in batch],
+                    max_new_tokens=frames)
             for p, w in zip(batch, wavs):
                 p.audio = np.asarray(w, dtype=np.float32).reshape(-1)
         except Exception as e:  # every request of the batch fails with it
@@ -155,6 +166,7 @@ class Speech(BaseModel):
     model: str = Field(default="", max_length=128)
     response_format: str = Field(default="wav", pattern="^(wav|mp3)$")
     instructions: str = Field(default="", max_length=500)
+    language: str = Field(default="", max_length=40)
     speed: float | None = None  # not supported; the speaker's own pace
 
 
@@ -169,18 +181,21 @@ def health():
 def voices():
     if model is None:
         raise HTTPException(503, "loading the model")
-    return {"voices": sorted(speakers)}
+    return {"voices": sorted(voice_names)}
 
 
 @app.post("/v1/audio/speech")
 async def speech(req: Speech):
     if model is None:
         raise HTTPException(503, "loading the model")
-    name = req.voice.removesuffix(".wav").lower()
-    speaker = speakers.get(name) or (name if name in speakers.values() else None)
+    speaker = speakers.get(req.voice.removesuffix(".wav").lower())
     if speaker is None:
         raise HTTPException(400, f"unknown voice {req.voice!r}; see /v1/audio/voices")
-    pieces = [Piece(s, speaker, req.instructions.strip()) for s in sentences(req.input, MIN_CHARS)]
+    # Checked here, so a wrong one does not fail the batch it would join.
+    language = req.language.strip() or LANGUAGE
+    if languages and language.lower() not in languages | {"auto"}:
+        raise HTTPException(400, f"unknown language {language!r}; one of {sorted(languages)}")
+    pieces = [Piece(s, speaker, req.instructions.strip(), language) for s in sentences(req.input, MIN_CHARS)]
     if not pieces:
         raise HTTPException(400, "no text to speak")
     with queued:
