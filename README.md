@@ -73,7 +73,7 @@ the server keeps only that one.
 | `THREADS` | torch's default | CPU threads; leave one core for the rest of the node |
 | `LANGUAGE` | `Auto` | Language of requests that name none (`Auto`, `English`, `German`, …) |
 | `MAX_BATCH` | `16` | Sentences generated together, at most |
-| `MAX_ROW_FRAMES` | `6000` | Rows times the longest sentence's frame cap (3.75 frames per character, at least 75) a batch may hold; a longer sentence waits for a batch of its own length |
+| `MAX_ROW_FRAMES` | `6000` | Rows times the longest sentence's frame cap (2.5 frames per character, at least 75: half the usual pace before a sentence is cut) a batch may hold. The oldest waiting sentence always goes; the others closest to it in length join, since every row runs as long as the batch's longest |
 | `BATCH_WAIT_MS` | `100` | How long a batch waits for sentences of further requests |
 | `MIN_CHARS` | `40` | Shorter sentences are joined with the next |
 | `SENTENCE_PAUSE` | `0.2` | Seconds of silence between sentences |
