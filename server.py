@@ -23,6 +23,7 @@ and int8 quantization made the speech unintelligible.
 """
 
 import asyncio
+import ctypes
 import io
 import logging
 import os
@@ -111,6 +112,20 @@ def last_layer_only(forward):
     return wrapped
 
 
+try:
+    _libc = ctypes.CDLL("libc.so.6")
+except OSError:  # not glibc
+    _libc = None
+
+
+def trim():
+    """Hands the memory a batch freed back to the system. glibc keeps it
+    in its arenas otherwise: the resident memory between batches crept up
+    from 7.9 to 11.4 GiB within an hour, leaving less room for the next."""
+    if _libc is not None:
+        _libc.malloc_trim(0)
+
+
 def anon_mib() -> int:
     with open("/proc/self/status") as f:
         for line in f:
@@ -185,6 +200,8 @@ def worker():
                  max(peak[0], anon_mib()) - before)
         for p in batch:
             p.done.set()
+        wavs = None
+        trim()
 
 
 threading.Thread(target=load, daemon=True).start()
