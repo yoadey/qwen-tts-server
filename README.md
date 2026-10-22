@@ -26,10 +26,16 @@ curl -s localhost:8000/v1/audio/speech -H 'Content-Type: application/json' \
 
 Decoding is bound by memory bandwidth: every generated frame reads all
 weights, so several texts generated together cost little more than one.
-Every input is split into sentences, and the sentences of all waiting
-requests (up to `MAX_BATCH`) are generated in one batch; each request gets
-its sentences back in order, joined by a short pause. Send several requests
-at once (or long ones) to use it.
+Every input is split into pieces, and the pieces of all waiting requests
+(up to `MAX_BATCH`) are generated in one batch; each request gets its
+pieces back in order, joined by a short pause. Send several requests at
+once (or long ones) to use it.
+
+A piece is a sentence by default. With `MAX_CHARS`, a request of up to that
+many characters (a paragraph) is generated as one piece: the model then
+reads it with one tone and pace throughout, where sentences generated apart
+may each come out a little different. Fewer of the longer pieces fit in a
+batch (`MAX_ROW_FRAMES`), so it is slower.
 
 Measured on 4 vCPUs (Intel, AVX2/AVX-VNNI, DDR4) with 3 threads, 1.7B,
 float32, an English passage of 10 lines (narration and dialogue with
@@ -76,6 +82,7 @@ the server keeps only that one.
 | `MAX_ROW_FRAMES` | `6000` | Rows times the longest sentence's frame cap (2.5 frames per character, at least 75: half the usual pace before a sentence is cut) a batch may hold. The oldest waiting sentence always goes; the others closest to it in length join, since every row runs as long as the batch's longest |
 | `BATCH_WAIT_MS` | `100` | How long a batch waits for sentences of further requests |
 | `MIN_CHARS` | `40` | Shorter sentences are joined with the next |
+| `MAX_CHARS` | `0` | Requests of up to this many characters are generated as one piece; longer ones are split at sentences into pieces of about equal length. `0`: every sentence is a piece |
 | `SENTENCE_PAUSE` | `0.2` | Seconds of silence between sentences |
 
 A model that fails to load ends the process, so Kubernetes restarts it (a
@@ -86,7 +93,7 @@ broken download is resumed).
 `ghcr.io/yoadey/qwen-tts-server:<version>`, released from tags `v*.*.*`.
 
 ```sh
-docker run -p 8000:8000 -v qwen-models:/models -e THREADS=3 ghcr.io/yoadey/qwen-tts-server:0.2.0
+docker run -p 8000:8000 -v qwen-models:/models -e THREADS=3 ghcr.io/yoadey/qwen-tts-server:0.5.0
 ```
 
 ## Licence

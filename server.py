@@ -15,10 +15,10 @@ broken download is resumed).
 
 Speed on CPU: decoding is bound by memory bandwidth (every generated frame
 reads all weights), not by compute, so several texts generated together
-cost little more than one. Every input is split into sentences, and the
-sentences of all requests waiting (up to MAX_BATCH) are generated in one
-batch; each request gets its sentences back in order, joined by a short
-pause. Weights stay float32: bfloat16 has no native support on these CPUs
+cost little more than one. Every input is split into pieces (sentences,
+or paragraphs up to MAX_CHARS), and the pieces of all requests waiting (up
+to MAX_BATCH) are generated in one batch; each request gets its pieces
+back in order, joined by a short pause. Weights stay float32: bfloat16 has no native support on these CPUs
 and int8 quantization made the speech unintelligible.
 """
 
@@ -38,7 +38,7 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from batching import frame_cap, select
-from text import sentences
+from text import pieces
 
 MODEL = os.environ.get("MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
 REVISION = os.environ.get("MODEL_REVISION") or None
@@ -54,6 +54,11 @@ SENTENCE_PAUSE = float(os.environ.get("SENTENCE_PAUSE", "0.2"))
 # Sentences shorter than this are joined with the next one (a lone
 # "Yes." speaks oddly, and every row of a batch costs the same per frame).
 MIN_CHARS = int(os.environ.get("MIN_CHARS", "40"))
+# Requests of up to this many characters are generated as one piece, in one
+# go: the model reads a paragraph with one voice and flow, sentence by
+# sentence its tone and pace drift between them. Longer ones are split at
+# sentences into pieces of about equal length. 0: every sentence a piece.
+MAX_CHARS = int(os.environ.get("MAX_CHARS", "0"))
 SAMPLE_RATE = 24000  # of the 12Hz codec's decoder
 
 # Gender of Qwen3-TTS CustomVoice's speakers (model card).
@@ -242,18 +247,19 @@ async def speech(req: Speech):
     language = req.language.strip() or LANGUAGE
     if languages and language.lower() not in languages | {"auto"}:
         raise HTTPException(400, f"unknown language {language!r}; one of {sorted(languages)}")
-    pieces = [Piece(s, speaker, req.instructions.strip(), language) for s in sentences(req.input, MIN_CHARS)]
-    if not pieces:
+    parts = [Piece(s, speaker, req.instructions.strip(), language)
+             for s in pieces(req.input, MIN_CHARS, MAX_CHARS)]
+    if not parts:
         raise HTTPException(400, "no text to speak")
     with queued:
-        queue.extend(pieces)
+        queue.extend(parts)
         queued.notify()
-    for p in pieces:
+    for p in parts:
         await asyncio.to_thread(p.done.wait)
         if p.error is not None:
             raise HTTPException(500, f"generation failed: {p.error}")
     pause = np.zeros(int(SENTENCE_PAUSE * SAMPLE_RATE), dtype=np.float32)
-    audio = np.concatenate([x for p in pieces for x in (p.audio, pause)][:-1])
+    audio = np.concatenate([x for p in parts for x in (p.audio, pause)][:-1])
     if audio.size == 0:
         raise HTTPException(500, "no audio generated")
     buf = io.BytesIO()
