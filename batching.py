@@ -6,7 +6,8 @@ import math
 # 10 characters per second; a sentence may take twice that (half the pace)
 # before it is cut, so a run that does not end cannot grow without bound.
 # The cap also bounds a batch (select), so a lower one lets more rows in.
-FRAMES_PER_CHAR = 12.5 / 10 * 2
+FRAME_RATE = 12.5
+FRAMES_PER_CHAR = FRAME_RATE / 10 * 2
 MIN_FRAMES = 75
 
 

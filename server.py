@@ -37,7 +37,7 @@ import torch
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from batching import frame_cap, select
+from batching import FRAME_RATE, frame_cap, select
 from text import pieces
 
 MODEL = os.environ.get("MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
@@ -199,10 +199,16 @@ def worker():
             for p in batch:
                 p.error = e
         sampling.set()
-        seconds = sum(p.audio.size for p in batch if p.audio is not None) / SAMPLE_RATE
-        log.info("batch of %d: %.1f s of speech in %.1f s (frame cap %d, memory %d MiB, peak +%d MiB)",
-                 len(batch), seconds, time.perf_counter() - started, frames, before,
-                 max(peak[0], anon_mib()) - before)
+        lengths = [p.audio.size / SAMPLE_RATE for p in batch if p.audio is not None]
+        log.info("batch of %d: %.1f s of speech in %.1f s (longest %.1f s, frame cap %d, memory %d MiB, peak +%d MiB)",
+                 len(batch), sum(lengths), time.perf_counter() - started, max(lengths, default=0), frames,
+                 before, max(peak[0], anon_mib()) - before)
+        for p in batch:
+            # A piece the model did not end: it ran on to the batch's cap,
+            # holding every row (and its memory) as long.
+            if p.audio is not None and p.audio.size / SAMPLE_RATE * FRAME_RATE > frame_cap(p.text):
+                log.warning("piece of %d characters ran past its frame cap (%.1f s), likely garbled: %.60r",
+                            len(p.text), p.audio.size / SAMPLE_RATE, p.text)
         for p in batch:
             p.done.set()
         wavs = None
